@@ -33,12 +33,13 @@ impl PlatformTrashContext {
     }
 }
 impl TrashContext {
-    pub(crate) fn delete_all_canonicalized(&self, full_paths: Vec<PathBuf>) -> Result<(), Error> {
+    pub(crate) fn delete_all_canonicalized(&self, full_paths: Vec<PathBuf>) -> Result<Option<Vec<TrashItem>>, Error> {
         let home_trash = canonicalize_path_or_parents(home_trash()?.as_path())?;
         let sorted_mount_points = get_sorted_mount_points()?;
         let home_trash_topdir = get_first_topdir_containing_path(&home_trash, &sorted_mount_points);
         debug!("The 'home trash' topdir is {:?}", home_trash_topdir);
         let uid = unsafe { libc::getuid() };
+        let mut items = Vec::with_capacity(full_paths.len());
         for path in full_paths {
             debug!("Deleting {:?}", path);
             let topdir = get_first_topdir_containing_path(&path, &sorted_mount_points);
@@ -47,15 +48,16 @@ impl TrashContext {
                 debug!("The topdir was identical to the 'home trash' topdir, so moving to the home trash.");
                 // Note that the following function creates the trash folder
                 // and its required subfolders in case they don't exist.
-                move_to_trash(path, &home_trash, topdir).map_err(|(p, e)| fs_error(p, e))?;
+                items.push(move_to_trash(path, &home_trash, topdir).map_err(|(p, e)| fs_error(p, e))?);
             } else {
                 execute_on_mounted_trash_folders(uid, topdir, true, true, |trash_path| {
-                    move_to_trash(&path, trash_path, topdir)
+                    items.push(move_to_trash(&path, trash_path, topdir)?);
+                    Ok(())
                 })
                 .map_err(|(p, e)| fs_error(p, e))?;
             }
         }
-        Ok(())
+        Ok(Some(items))
     }
 }
 
@@ -461,7 +463,7 @@ fn move_to_trash(
     src: impl AsRef<Path>,
     trash_folder: impl AsRef<Path>,
     _topdir: impl AsRef<Path>,
-) -> Result<(), FsError> {
+) -> Result<TrashItem, FsError> {
     let src = src.as_ref();
     let trash_folder = trash_folder.as_ref();
     let files_folder = trash_folder.join("files");
@@ -502,6 +504,7 @@ fn move_to_trash(
         info_name.push(".trashinfo");
         let info_file_path = info_folder.join(&info_name);
         let info_result = OpenOptions::new().create_new(true).write(true).open(&info_file_path);
+        let mut time_deleted = -1;
         match info_result {
             Err(error) => {
                 if error.kind() == std::io::ErrorKind::AlreadyExists {
@@ -521,10 +524,12 @@ fn move_to_trash(
                             #[cfg(feature = "chrono")]
                             {
                                 let now = chrono::Local::now();
+                                time_deleted = now.timestamp();
                                 writeln!(file, "DeletionDate={}", now.format("%Y-%m-%dT%H:%M:%S"))
                             }
                             #[cfg(not(feature = "chrono"))]
                             {
+                                time_deleted = -1;
                                 Ok(())
                             }
                         })
@@ -548,12 +553,18 @@ fn move_to_trash(
             }
             Ok(_) => {
                 // We did it!
-                break;
+                return Ok(TrashItem {
+                    id: info_file_path.into(),
+                    name: filename.into(),
+                    original_parent: src
+                        .parent()
+                        .expect("Absolute path to trashed item should have a parent")
+                        .to_path_buf(),
+                    time_deleted,
+                });
             }
         }
     }
-
-    Ok(())
 }
 
 /// An error may mean that a collision was found.
