@@ -737,6 +737,7 @@ fn canonicalize_path_or_parents(mut path: &Path) -> Result<PathBuf, Error> {
     }
 }
 
+#[derive(Debug)]
 struct MountPoint {
     mnt_dir: PathBuf,
     _mnt_type: String,
@@ -919,12 +920,19 @@ fn get_mount_points() -> Result<Vec<MountPoint>, Error> {
     Ok(result)
 }
 
+#[cfg(target_os = "redox")]
+fn get_mount_points() -> Result<Vec<MountPoint>, Error> {
+    //TODO: redox method for reading mount information
+    Ok(vec![MountPoint { mnt_dir: PathBuf::from("/"), _mnt_type: String::new(), _mnt_fsname: String::new() }])
+}
+
 #[cfg(not(any(
     target_os = "linux",
     target_os = "dragonfly",
     target_os = "freebsd",
     target_os = "openbsd",
-    target_os = "netbsd"
+    target_os = "netbsd",
+    target_os = "redox"
 )))]
 fn get_mount_points() -> Result<Vec<MountPoint>, Error> {
     // On platforms that don't have support yet, return an error
